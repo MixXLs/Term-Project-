@@ -1,968 +1,848 @@
-#!/usr/bin/env python3
-"""
-Car Rental Management System
-ระบบจัดการรถเช่า - Binary File Storage with Python struct
+import os, struct, time, unicodedata
+from datetime import datetime
+from textwrap import dedent
 
-Author: Car Rental System
-Version: 1.0
-Python: 3.10+
-Endianness: Little-Endian ('<')
+# ---------- พาธไฟล์ ----------
+CARS_PATH = "cars.dat"
+CUSTOMERS_PATH = "customers.dat"
+RENT_A_CAR_PATH = "rentals.dat"
+REPORT_PATH = "report.txt"
 
-Binary Files:
-- cars.dat: Main car records (fixed-length)
-- operations.dat: Operation logs 
-- sequence.dat: ID sequence tracking
-- report.txt: Text report output
+# ---------- โครงสร้างระเบียน (Little-Endian, fixed-length) ----------
+# cars.dat:
+#   i car_id | 12s plate | 12s brand | 16s model | i year | f rate |
+#   i status(1=active,0=inactive) | i is_rented | i created_at | i updated_at
+CAR_FMT = "<i12s12s16sifiiii"
+CAR_SIZE = struct.calcsize(CAR_FMT)
 
-CRUD Operations:
-1. Add (เพิ่ม)
-2. Update (แก้ไข) 
-3. Delete (ลบ)
-4. View (ดู)
-5. Generate Report (สร้างรายงาน)
-0. Exit (ออก)
-"""
+# customers.dat:
+#   i customer_id | 15s id_card | 60s name | 12s phone | i status | i created_at | i updated_at
+CUST_FMT = "<i15s60s12siii"
+CUST_SIZE = struct.calcsize(CUST_FMT)
 
-import struct
-import os
-import io
-import datetime
-import textwrap
-import argparse
-from typing import Optional, List, Dict, Any
+# rentals.dat:
+#   i rental_id | i car_id | i customer_id | i start_ts | i end_ts |
+#   i total_days | f total_amount | i status(1=open,0=closed,-1=deleted) | i created_at | i updated_at
+RENT_FMT = "<iiiiiifiii"  # 6*i + f + 3*i
+RENT_SIZE = struct.calcsize(RENT_FMT)
 
-# ========== CONFIGURATION ==========
-# Fixed-length record sizes (bytes)
-CAR_RECORD_SIZE = 72  # Total size per car record
-OPERATION_RECORD_SIZE = 32  # Total size per operation record
-SEQUENCE_RECORD_SIZE = 4   # ID sequence (integer)
 
-# Struct format strings (Little-Endian)
-CAR_STRUCT_FORMAT = '<I12s12s16sIfIBBII'  # Car record format
-OPERATION_STRUCT_FORMAT = '<IIcI20s'       # Operation log format
-SEQUENCE_STRUCT_FORMAT = '<I'              # Sequence format
+# ---------- Utils ----------
+def _pad(s: str, length: int) -> bytes:
+    b = (s or "").encode("utf-8")
+    return (b[:length] + b"\x00" * max(0, length - len(b))) if len(b) != length else b
 
-# File names
-CARS_FILE = 'cars.dat'
-OPERATIONS_FILE = 'operations.dat' 
-SEQUENCE_FILE = 'sequence.dat'
-REPORT_FILE = 'report.txt'
 
-# Status constants
-STATUS_ACTIVE = 1
-STATUS_DELETED = 0
+def _unpad(b: bytes) -> str:
+    return b.rstrip(b"\x00").decode("utf-8", errors="ignore")
 
-class CarRecord:
-    """
-    Car record structure (Fixed-length: 72 bytes)
-    
-    Fields:
-    - car_id: I (4 bytes) - รหัสรถ
-    - license_plate: 12s (12 bytes) - ทะเบียนรถ
-    - brand: 12s (12 bytes) - ยี่ห้อ
-    - model: 16s (16 bytes) - รุ่น
-    - year: I (4 bytes) - ปี
-    - daily_rate: f (4 bytes) - ค่าเช่า/วัน
-    - odometer: I (4 bytes) - เลขไมล์
-    - status: B (1 byte) - สถานะ (1=Active, 0=Deleted)
-    - is_rented: B (1 byte) - เช่าอยู่ (1=Yes, 0=No)
-    - created_at: I (4 bytes) - วันที่สร้าง (timestamp)
-    - updated_at: I (4 bytes) - วันที่แก้ไข (timestamp)
-    """
-    
-    def __init__(self, car_id: int = 0, license_plate: str = "", brand: str = "", 
-                 model: str = "", year: int = 0, daily_rate: float = 0.0, 
-                 odometer: int = 0, status: int = STATUS_ACTIVE, 
-                 is_rented: int = 0, created_at: int = 0, updated_at: int = 0):
-        self.car_id = car_id
-        self.license_plate = license_plate[:12]  # Truncate to fit
-        self.brand = brand[:12]
-        self.model = model[:16]
-        self.year = year
-        self.daily_rate = daily_rate
-        self.odometer = odometer
-        self.status = status
-        self.is_rented = is_rented
-        self.created_at = created_at or int(datetime.datetime.now().timestamp())
-        self.updated_at = updated_at or int(datetime.datetime.now().timestamp())
-    
-    def pack(self) -> bytes:
-        """Pack car record to binary format"""
-        return struct.pack(
-            CAR_STRUCT_FORMAT,
-            self.car_id,
-            self.license_plate.encode('utf-8')[:12].ljust(12, b'\x00'),
-            self.brand.encode('utf-8')[:12].ljust(12, b'\x00'),
-            self.model.encode('utf-8')[:16].ljust(16, b'\x00'),
-            self.year,
-            self.daily_rate,
-            self.odometer,
-            self.status,
-            self.is_rented,
-            self.created_at,
-            self.updated_at
-        )
-    
-    @classmethod
-    def unpack(cls, data: bytes) -> 'CarRecord':
-        """Unpack binary data to car record"""
-        unpacked = struct.unpack(CAR_STRUCT_FORMAT, data)
-        return cls(
-            car_id=unpacked[0],
-            license_plate=unpacked[1].rstrip(b'\x00').decode('utf-8', errors='ignore'),
-            brand=unpacked[2].rstrip(b'\x00').decode('utf-8', errors='ignore'),
-            model=unpacked[3].rstrip(b'\x00').decode('utf-8', errors='ignore'),
-            year=unpacked[4],
-            daily_rate=unpacked[5],
-            odometer=unpacked[6],
-            status=unpacked[7],
-            is_rented=unpacked[8],
-            created_at=unpacked[9],
-            updated_at=unpacked[10]
-        )
-    
-    def __str__(self) -> str:
-        status_text = "Active" if self.status == STATUS_ACTIVE else "Deleted"
-        rented_text = "เช่าอยู่" if self.is_rented else "ว่าง"
-        created_date = datetime.datetime.fromtimestamp(self.created_at).strftime('%Y-%m-%d %H:%M')
-        updated_date = datetime.datetime.fromtimestamp(self.updated_at).strftime('%Y-%m-%d %H:%M')
-        
-        return f"""
-Car ID: {self.car_id}
-ทะเบียนรถ: {self.license_plate}
-ยี่ห้อ: {self.brand}
-รุ่น: {self.model}
-ปี: {self.year}
-ค่าเช่า/วัน: ฿{self.daily_rate:,.2f}
-เลขไมล์: {self.odometer:,} กม.
-สถานะ: {status_text}
-การเช่า: {rented_text}
-สร้างเมื่อ: {created_date}
-แก้ไขล่าสุด: {updated_date}
-"""
 
-class OperationRecord:
-    """
-    Operation log record structure (Fixed-length: 32 bytes)
-    
-    Fields:
-    - operation_id: I (4 bytes) - รหัสการทำงาน
-    - car_id: I (4 bytes) - รหัสรถที่เกี่ยวข้อง
-    - operation_type: c (1 byte) - ประเภทการทำงาน (A=Add, U=Update, D=Delete, V=View)
-    - timestamp: I (4 bytes) - เวลาดำเนินการ
-    - details: 20s (20 bytes) - รายละเอียดเพิ่มเติม
-    """
-    
-    def __init__(self, operation_id: int, car_id: int, operation_type: str, 
-                 timestamp: int = 0, details: str = ""):
-        self.operation_id = operation_id
-        self.car_id = car_id
-        self.operation_type = operation_type
-        self.timestamp = timestamp or int(datetime.datetime.now().timestamp())
-        self.details = details[:20]  # Truncate to fit
-    
-    def pack(self) -> bytes:
-        """Pack operation record to binary format"""
-        return struct.pack(
-            OPERATION_STRUCT_FORMAT,
-            self.operation_id,
-            self.car_id,
-            self.operation_type.encode('ascii')[:1],
-            self.timestamp,
-            self.details.encode('utf-8')[:20].ljust(20, b'\x00')
-        )
-    
-    @classmethod
-    def unpack(cls, data: bytes) -> 'OperationRecord':
-        """Unpack binary data to operation record"""
-        unpacked = struct.unpack(OPERATION_STRUCT_FORMAT, data)
-        return cls(
-            operation_id=unpacked[0],
-            car_id=unpacked[1],
-            operation_type=unpacked[2].decode('ascii'),
-            timestamp=unpacked[3],
-            details=unpacked[4].rstrip(b'\x00').decode('utf-8', errors='ignore')
-        )
+def now_ts() -> int:
+    return int(time.time())
 
-class CarRentalSystem:
-    """Main Car Rental Management System Class"""
-    
-    def __init__(self):
-        self.initialize_files()
-    
-    def initialize_files(self):
-        """Initialize binary files if they don't exist"""
-        # Initialize sequence file
-        if not os.path.exists(SEQUENCE_FILE):
-            with open(SEQUENCE_FILE, 'wb') as f:
-                f.write(struct.pack(SEQUENCE_STRUCT_FORMAT, 1000))  # Start from 1001
-        
-        # Initialize empty files if they don't exist
-        for filename in [CARS_FILE, OPERATIONS_FILE]:
-            if not os.path.exists(filename):
-                with open(filename, 'wb') as f:
-                    pass  # Create empty file
-        
-        # Add sample data if cars.dat is empty
-        if os.path.getsize(CARS_FILE) == 0:
-            self._add_sample_data()
-    
-    def _add_sample_data(self):
-        """Add sample car data"""
-        sample_cars = [
-            CarRecord(
-                car_id=1001,
-                license_plate="กธ 4821",
-                brand="Toyota",
-                model="Camry",
-                year=2025,
-                daily_rate=1100.00,
-                odometer=42850,
-                status=STATUS_ACTIVE,
-                is_rented=0
-            ),
-            CarRecord(
-                car_id=1002,
-                license_plate="งธ 9127", 
-                brand="Honda",
-                model="Accord",
-                year=2005,
-                daily_rate=1250.00,
-                odometer=156000,
-                status=STATUS_ACTIVE,
-                is_rented=1
-            )
-        ]
-        
-        for car in sample_cars:
-            self._write_car_record(car)
-            self._log_operation(car.car_id, 'A', 'Sample data')
-        
-        # Update sequence
-        with open(SEQUENCE_FILE, 'wb') as f:
-            f.write(struct.pack(SEQUENCE_STRUCT_FORMAT, 1002))
-    
-    def _get_next_car_id(self) -> int:
-        """Get next available car ID"""
-        with open(SEQUENCE_FILE, 'rb') as f:
-            data = f.read(SEQUENCE_RECORD_SIZE)
-            if data:
-                current_id = struct.unpack(SEQUENCE_STRUCT_FORMAT, data)[0]
-            else:
-                current_id = 1000
-        
-        next_id = current_id + 1
-        
-        # Update sequence file
-        with open(SEQUENCE_FILE, 'wb') as f:
-            f.write(struct.pack(SEQUENCE_STRUCT_FORMAT, next_id))
-        
-        return next_id
-    
-    def _write_car_record(self, car: CarRecord):
-        """Write car record to binary file"""
-        with open(CARS_FILE, 'ab') as f:
-            f.write(car.pack())
-    
-    def _update_car_record(self, car_id: int, car: CarRecord) -> bool:
-        """Update existing car record in binary file"""
-        records = self._read_all_cars()
-        updated = False
-        
-        with open(CARS_FILE, 'wb') as f:
-            for existing_car in records:
-                if existing_car.car_id == car_id:
-                    car.car_id = car_id  # Ensure ID stays the same
-                    car.updated_at = int(datetime.datetime.now().timestamp())
-                    f.write(car.pack())
-                    updated = True
-                else:
-                    f.write(existing_car.pack())
-        
-        return updated
-    
-    def _read_all_cars(self) -> List[CarRecord]:
-        """Read all car records from binary file"""
-        cars = []
-        if not os.path.exists(CARS_FILE):
-            return cars
-        
-        with open(CARS_FILE, 'rb') as f:
-            while True:
-                data = f.read(CAR_RECORD_SIZE)
-                if not data or len(data) < CAR_RECORD_SIZE:
-                    break
-                cars.append(CarRecord.unpack(data))
-        
-        return cars
-    
-    def _find_car_by_id(self, car_id: int) -> Optional[CarRecord]:
-        """Find car by ID"""
-        cars = self._read_all_cars()
-        for car in cars:
-            if car.car_id == car_id:
-                return car
-        return None
-    
-    def _log_operation(self, car_id: int, operation_type: str, details: str = ""):
-        """Log operation to binary file"""
-        # Get next operation ID
-        operation_id = 1
-        if os.path.exists(OPERATIONS_FILE):
-            with open(OPERATIONS_FILE, 'rb') as f:
-                f.seek(0, 2)  # Seek to end
-                file_size = f.tell()
-                if file_size > 0:
-                    operation_id = (file_size // OPERATION_RECORD_SIZE) + 1
-        
-        operation = OperationRecord(operation_id, car_id, operation_type, details=details)
-        
-        with open(OPERATIONS_FILE, 'ab') as f:
-            f.write(operation.pack())
-    
-    def _read_operations(self, limit: int = 10) -> List[OperationRecord]:
-        """Read recent operations from binary file"""
-        operations = []
-        if not os.path.exists(OPERATIONS_FILE):
-            return operations
-        
-        with open(OPERATIONS_FILE, 'rb') as f:
-            # Read from end of file
-            f.seek(0, 2)
-            file_size = f.tell()
-            
-            # Calculate how many records to read
-            total_records = file_size // OPERATION_RECORD_SIZE
-            start_record = max(0, total_records - limit)
-            
-            f.seek(start_record * OPERATION_RECORD_SIZE)
-            
-            while True:
-                data = f.read(OPERATION_RECORD_SIZE)
-                if not data or len(data) < OPERATION_RECORD_SIZE:
-                    break
-                operations.append(OperationRecord.unpack(data))
-        
-        return list(reversed(operations))  # Most recent first
-    
-    def add_car(self):
-        """Add new car (CRUD: Create)"""
-        print("\n" + "="*50)
-        print("เพิ่มรถใหม่ (Add New Car)")
-        print("="*50)
-        
+
+def ts2dmy(ts: int) -> str:
+    return datetime.fromtimestamp(ts).strftime("%d/%m/%Y") if ts else "-"
+
+
+def create_file():
+    for path in (CARS_PATH, CUSTOMERS_PATH, RENT_A_CAR_PATH):
+        if not os.path.exists(path):
+            open(path, "wb").close()
+
+
+def input_int(msg: str, allow_blank=False, min_val=None, max_val=None) -> int | None:
+    while True:
+        s = input(msg).strip()
+        if allow_blank and s == "":
+            return None
+        if not (s and s.lstrip("-").isdigit()):
+            print("กรุณาใส่จำนวนเต็ม")
+            continue
+        v = int(s)
+        if min_val is not None and v < min_val:
+            print(f"กรุณาใส่ค่าตั้งแต่ {min_val} ขึ้นไป")
+            continue
+        if max_val is not None and v > max_val:
+            print(f"กรุณาใส่ค่าน้อยกว่าหรือเท่ากับ {max_val}")
+            continue
+        return v
+
+
+def input_float(
+    msg: str, allow_blank=False, min_val=None, max_val=None
+) -> float | None:
+    while True:
+        s = input(msg).strip()
+        if allow_blank and s == "":
+            return None
         try:
-            # Input validation
-            license_plate = input("ทะเบียนรถ (License Plate): ").strip()
-            if not license_plate or len(license_plate) > 12:
-                print("❌ ทะเบียนรถไม่ถูกต้อง (ต้องไม่เกิน 12 ตัวอักษร)")
-                return
-            
-            # Check duplicate license plate
-            cars = self._read_all_cars()
-            for car in cars:
-                if car.license_plate == license_plate and car.status == STATUS_ACTIVE:
-                    print("❌ ทะเบียนรถนี้มีอยู่แล้ว")
-                    return
-            
-            brand = input("ยี่ห้อ (Brand): ").strip()
-            if not brand or len(brand) > 12:
-                print("❌ ยี่ห้อไม่ถูกต้อง (ต้องไม่เกิน 12 ตัวอักษร)")
-                return
-            
-            model = input("รุ่น (Model): ").strip()
-            if not model or len(model) > 16:
-                print("❌ รุ่นไม่ถูกต้อง (ต้องไม่เกิน 16 ตัวอักษร)")
-                return
-            
-            year = int(input("ปี (Year): "))
-            if year < 1900 or year > datetime.datetime.now().year + 2:
-                print("❌ ปีไม่ถูกต้อง")
-                return
-            
-            daily_rate = float(input("ค่าเช่า/วัน (Daily Rate): "))
-            if daily_rate <= 0 or daily_rate > 99999.99:
-                print("❌ ค่าเช่าไม่ถูกต้อง")
-                return
-            
-            odometer = int(input("เลขไมล์ (Odometer): "))
-            if odometer < 0 or odometer > 9999999:
-                print("❌ เลขไมล์ไม่ถูกต้อง")
-                return
-            
-            is_rented_input = input("เช่าอยู่หรือไม่? (y/n): ").strip().lower()
-            is_rented = 1 if is_rented_input == 'y' else 0
-            
-            # Create new car record
-            car_id = self._get_next_car_id()
-            car = CarRecord(
-                car_id=car_id,
-                license_plate=license_plate,
-                brand=brand,
-                model=model,
-                year=year,
-                daily_rate=daily_rate,
-                odometer=odometer,
-                status=STATUS_ACTIVE,
-                is_rented=is_rented
-            )
-            
-            # Save to binary file
-            self._write_car_record(car)
-            self._log_operation(car_id, 'A', f'Added {brand} {model}')
-            
-            print(f"\n✅ เพิ่มรถสำเร็จ! Car ID: {car_id}")
-            print(car)
-            
+            v = float(s)
         except ValueError:
-            print("❌ ข้อมูลไม่ถูกต้อง กรุณาใส่ตัวเลข")
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def update_car(self):
-        """Update existing car (CRUD: Update)"""
-        print("\n" + "="*50)
-        print("แก้ไขข้อมูลรถ (Update Car)")
-        print("="*50)
-        
-        try:
-            car_id = int(input("รหัสรถที่ต้องการแก้ไข (Car ID): "))
-            car = self._find_car_by_id(car_id)
-            
-            if not car:
-                print("❌ ไม่พบรถที่มี ID นี้")
-                return
-            
-            if car.status == STATUS_DELETED:
-                print("❌ ไม่สามารถแก้ไขรถที่ถูกลบแล้ว")
-                return
-            
-            print("\nข้อมูลปัจจุบัน:")
-            print(car)
-            
-            print("\nกรอกข้อมูลใหม่ (Enter เพื่อข้ามการแก้ไข):")
-            
-            # Update fields
-            license_plate = input(f"ทะเบียนรถ [{car.license_plate}]: ").strip()
-            if license_plate and len(license_plate) <= 12:
-                car.license_plate = license_plate
-            
-            brand = input(f"ยี่ห้อ [{car.brand}]: ").strip()
-            if brand and len(brand) <= 12:
-                car.brand = brand
-            
-            model = input(f"รุ่น [{car.model}]: ").strip()
-            if model and len(model) <= 16:
-                car.model = model
-            
-            year_input = input(f"ปี [{car.year}]: ").strip()
-            if year_input:
-                year = int(year_input)
-                if 1900 <= year <= datetime.datetime.now().year + 2:
-                    car.year = year
-            
-            rate_input = input(f"ค่าเช่า/วัน [{car.daily_rate}]: ").strip()
-            if rate_input:
-                daily_rate = float(rate_input)
-                if 0 < daily_rate <= 99999.99:
-                    car.daily_rate = daily_rate
-            
-            odometer_input = input(f"เลขไมล์ [{car.odometer}]: ").strip()
-            if odometer_input:
-                odometer = int(odometer_input)
-                if 0 <= odometer <= 9999999:
-                    car.odometer = odometer
-            
-            rented_input = input(f"เช่าอยู่? (y/n) [{'y' if car.is_rented else 'n'}]: ").strip().lower()
-            if rented_input in ['y', 'n']:
-                car.is_rented = 1 if rented_input == 'y' else 0
-            
-            # Update record
-            if self._update_car_record(car_id, car):
-                self._log_operation(car_id, 'U', f'Updated {car.brand} {car.model}')
-                print("\n✅ แก้ไขข้อมูลสำเร็จ!")
-                print(car)
-            else:
-                print("❌ ไม่สามารถแก้ไขข้อมูลได้")
-                
-        except ValueError:
-            print("❌ กรุณาใส่รหัสรถเป็นตัวเลข")
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def delete_car(self):
-        """Delete car (CRUD: Delete - Soft delete)"""
-        print("\n" + "="*50)
-        print("ลบรถ (Delete Car)")
-        print("="*50)
-        
-        try:
-            car_id = int(input("รหัสรถที่ต้องการลบ (Car ID): "))
-            car = self._find_car_by_id(car_id)
-            
-            if not car:
-                print("❌ ไม่พบรถที่มี ID นี้")
-                return
-            
-            if car.status == STATUS_DELETED:
-                print("❌ รถนี้ถูกลบไปแล้ว")
-                return
-            
-            print("\nข้อมูลรถที่จะลบ:")
-            print(car)
-            
-            confirm = input("\nยืนยันการลบ? (y/n): ").strip().lower()
-            if confirm != 'y':
-                print("ยกเลิกการลบ")
-                return
-            
-            # Soft delete - change status
-            car.status = STATUS_DELETED
-            
-            if self._update_car_record(car_id, car):
-                self._log_operation(car_id, 'D', f'Deleted {car.brand} {car.model}')
-                print("✅ ลบรถสำเร็จ!")
-            else:
-                print("❌ ไม่สามารถลบรถได้")
-                
-        except ValueError:
-            print("❌ กรุณาใส่รหัสรถเป็นตัวเลข")
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def view_menu(self):
-        """View submenu (CRUD: Read)"""
-        while True:
-            print("\n" + "="*50)
-            print("เมนูดูข้อมูล (View Menu)")
-            print("="*50)
-            print("1. ดูรายการเดียว (View Single)")
-            print("2. ดูทั้งหมด (View All)")
-            print("3. ดูแบบกรอง (View Filtered)")
-            print("4. สถิติโดยสรุป (Summary Statistics)")
-            print("0. กลับ (Back)")
-            
-            choice = input("\nเลือก (1-4, 0): ").strip()
-            
-            if choice == '1':
-                self.view_single()
-            elif choice == '2':
-                self.view_all()
-            elif choice == '3':
-                self.view_filtered()
-            elif choice == '4':
-                self.view_statistics()
-            elif choice == '0':
-                break
-            else:
-                print("❌ กรุณาเลือก 1-4 หรือ 0")
-    
-    def view_single(self):
-        """View single car record"""
-        print("\n" + "="*50)
-        print("ดูรายการเดียว (View Single Car)")
-        print("="*50)
-        
-        try:
-            car_id = int(input("รหัสรถ (Car ID): "))
-            car = self._find_car_by_id(car_id)
-            
-            if not car:
-                print("❌ ไม่พบรถที่มี ID นี้")
-                return
-            
-            print(car)
-            self._log_operation(car_id, 'V', 'Viewed single record')
-            
-        except ValueError:
-            print("❌ กรุณาใส่รหัสรถเป็นตัวเลข")
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def view_all(self):
-        """View all car records"""
-        print("\n" + "="*50)
-        print("รายการรถทั้งหมด (All Cars)")
-        print("="*50)
-        
-        cars = self._read_all_cars()
-        if not cars:
-            print("ไม่มีข้อมูลรถ")
-            return
-        
-        # Table header
-        print(f"{'ID':<6} {'ทะเบียน':<12} {'ยี่ห้อ':<12} {'รุ่น':<16} {'ปี':<6} {'ค่าเช่า':<10} {'สถานะ':<8} {'เช่า':<6}")
-        print("-" * 80)
-        
-        active_count = 0
-        deleted_count = 0
-        
-        for car in cars:
-            status_text = "Active" if car.status == STATUS_ACTIVE else "Deleted"
-            rented_text = "เช่าอยู่" if car.is_rented else "ว่าง"
-            
-            print(f"{car.car_id:<6} {car.license_plate:<12} {car.brand:<12} {car.model:<16} "
-                  f"{car.year:<6} {car.daily_rate:<10.2f} {status_text:<8} {rented_text:<6}")
-            
-            if car.status == STATUS_ACTIVE:
-                active_count += 1
-            else:
-                deleted_count += 1
-        
-        print("-" * 80)
-        print(f"รวม: {len(cars)} คัน | Active: {active_count} คัน | Deleted: {deleted_count} คัน")
-        
-        # Log operation for first car (if any)
-        if cars:
-            self._log_operation(0, 'V', 'Viewed all records')
-    
-    def view_filtered(self):
-        """View filtered car records"""
-        print("\n" + "="*50)
-        print("ดูแบบกรอง (Filtered View)")
-        print("="*50)
-        
-        print("เลือกเงื่อนไขการกรอง:")
-        print("1. สถานะ (Status)")
-        print("2. การเช่า (Rental Status)")
-        print("3. ยี่ห้อ (Brand)")
-        print("4. ช่วงปี (Year Range)")
-        
-        filter_choice = input("เลือกการกรอง (1-4): ").strip()
-        
-        cars = self._read_all_cars()
-        filtered_cars = []
-        
-        try:
-            if filter_choice == '1':
-                status_filter = input("สถานะ (active/deleted): ").strip().lower()
-                status = STATUS_ACTIVE if status_filter == 'active' else STATUS_DELETED
-                filtered_cars = [car for car in cars if car.status == status]
-                
-            elif filter_choice == '2':
-                rental_filter = input("การเช่า (rented/available): ").strip().lower()
-                is_rented = 1 if rental_filter == 'rented' else 0
-                filtered_cars = [car for car in cars if car.is_rented == is_rented and car.status == STATUS_ACTIVE]
-                
-            elif filter_choice == '3':
-                brand_filter = input("ยี่ห้อ: ").strip()
-                filtered_cars = [car for car in cars if brand_filter.lower() in car.brand.lower()]
-                
-            elif filter_choice == '4':
-                min_year = int(input("ปีเริ่มต้น: "))
-                max_year = int(input("ปีสิ้นสุด: "))
-                filtered_cars = [car for car in cars if min_year <= car.year <= max_year]
-                
-            else:
-                print("❌ เลือกไม่ถูกต้อง")
-                return
-            
-            if not filtered_cars:
-                print("ไม่พบข้อมูลที่ตรงกับเงื่อนไข")
-                return
-            
-            # Display filtered results
-            print(f"\nผลการกรอง ({len(filtered_cars)} คัน):")
-            print(f"{'ID':<6} {'ทะเบียน':<12} {'ยี่ห้อ':<12} {'รุ่น':<16} {'ปี':<6} {'ค่าเช่า':<10} {'สถานะ':<8} {'เช่า':<6}")
-            print("-" * 80)
-            
-            for car in filtered_cars:
-                status_text = "Active" if car.status == STATUS_ACTIVE else "Deleted"
-                rented_text = "เช่าอยู่" if car.is_rented else "ว่าง"
-                
-                print(f"{car.car_id:<6} {car.license_plate:<12} {car.brand:<12} {car.model:<16} "
-                      f"{car.year:<6} {car.daily_rate:<10.2f} {status_text:<8} {rented_text:<6}")
-            
-            # Log operation
-            if filtered_cars:
-                self._log_operation(0, 'V', f'Filtered view: {len(filtered_cars)} cars')
-                
-        except ValueError:
-            print("❌ ข้อมูลไม่ถูกต้อง")
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def view_statistics(self):
-        """View summary statistics"""
-        print("\n" + "="*50)
-        print("สถิติโดยสรุป (Summary Statistics)")
-        print("="*50)
-        
-        cars = self._read_all_cars()
-        if not cars:
-            print("ไม่มีข้อมูลรถ")
-            return
-        
-        # Calculate statistics
-        total_cars = len(cars)
-        active_cars = [car for car in cars if car.status == STATUS_ACTIVE]
-        deleted_cars = [car for car in cars if car.status == STATUS_DELETED]
-        rented_cars = [car for car in active_cars if car.is_rented]
-        available_cars = [car for car in active_cars if not car.is_rented]
-        
-        print(f"จำนวนรถทั้งหมด: {total_cars} คัน")
-        print(f"รถที่ใช้งาน (Active): {len(active_cars)} คัน")
-        print(f"รถที่ลบแล้ว (Deleted): {len(deleted_cars)} คัน")
-        print(f"รถที่เช่าอยู่: {len(rented_cars)} คัน")
-        print(f"รถว่าง: {len(available_cars)} คัน")
-        
-        if active_cars:
-            rates = [car.daily_rate for car in active_cars]
-            avg_rate = sum(rates) / len(rates)
-            min_rate = min(rates)
-            max_rate = max(rates)
-            
-            print(f"\nสถิติค่าเช่า (รถที่ใช้งานเท่านั้น):")
-            print(f"ค่าเช่าเฉลี่ย: ฿{avg_rate:,.2f}")
-            print(f"ค่าเช่าต่ำสุด: ฿{min_rate:,.2f}")
-            print(f"ค่าเช่าสูงสุด: ฿{max_rate:,.2f}")
-            
-            # Brand statistics
-            brands = {}
-            for car in active_cars:
-                brands[car.brand] = brands.get(car.brand, 0) + 1
-            
-            print(f"\nรถแยกตามยี่ห้อ (Active only):")
-            for brand, count in sorted(brands.items()):
-                print(f"- {brand}: {count} คัน")
-        
-        # System capacity (simulated)
-        total_slots = 1000
-        available_slots = total_slots - total_cars
-        print(f"\nความจุระบบ:")
-        print(f"ความจุทั้งหมด: {total_slots} คัน")
-        print(f"ใช้งานแล้ว: {total_cars} คัน")
-        print(f"ช่องว่าง: {available_slots} คัน")
-        
-        # Recent operations
-        operations = self._read_operations(5)
-        if operations:
-            print(f"\nการทำงานล่าสุด:")
-            for op in operations:
-                op_time = datetime.datetime.fromtimestamp(op.timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                op_type_map = {'A': 'ADD', 'U': 'UPDATE', 'D': 'DELETE', 'V': 'VIEW'}
-                op_type = op_type_map.get(op.operation_type, op.operation_type)
-                print(f"- {op_time} | {op_type} | Car ID: {op.car_id} | {op.details}")
-        
-        # Log this view operation
-        self._log_operation(0, 'V', 'Viewed statistics')
-    
-    def generate_report(self):
-        """Generate text report to file"""
-        print("\n" + "="*50)
-        print("สร้างรายงาน (Generate Report)")
-        print("="*50)
-        
-        try:
-            cars = self._read_all_cars()
-            operations = self._read_operations(10)
-            
-            now = datetime.datetime.now()
-            
-            # Calculate statistics
-            total_cars = len(cars)
-            active_cars = [car for car in cars if car.status == STATUS_ACTIVE]
-            deleted_cars = [car for car in cars if car.status == STATUS_DELETED]
-            rented_cars = [car for car in active_cars if car.is_rented]
-            available_cars = [car for car in active_cars if not car.is_rented]
-            
-            report_content = f"""Car Rental System - Summary Report (Sample)
-Generated at: {now.strftime('%Y-%m-%d %H:%M:%S')}
-App Version: 1.0
-Endianness: Little-Endian
-Encoding: UTF-8 (Fixed-length)
+            print("กรุณาใส่จำนวนจริง")
+            continue
+        if min_val is not None and v < min_val:
+            print(f"กรุณาใส่ค่าตั้งแต่ {min_val} ขึ้นไป")
+            continue
+        if max_val is not None and v > max_val:
+            print(f"กรุณาใส่ค่าน้อยกว่าหรือเท่ากับ {max_val}")
+            continue
+        return v
 
-{'='*60}
-SUMMARY STATISTICS
-{'='*60}
-Total Cars (รวมรถทั้งหมด): {total_cars}
-Active Cars (รถที่ใช้งาน): {len(active_cars)}
-Deleted Cars (รถที่ลบแล้ว): {len(deleted_cars)}
-Available Cars (รถว่าง): {len(available_cars)}
-Rented Cars (รถที่เช่าอยู่): {len(rented_cars)}
 
-Rate Statistics (THB/day, Active only):
-"""
-            
-            if active_cars:
-                rates = [car.daily_rate for car in active_cars]
-                avg_rate = sum(rates) / len(rates)
-                min_rate = min(rates)
-                max_rate = max(rates)
-                
-                report_content += f"""- Min: {min_rate:.2f}
-- Max: {max_rate:.2f}
-- Avg: {avg_rate:.2f}
+def read_date(prompt: str) -> tuple[int, int, int]:
+    while True:
+        s = input(prompt).strip()
+        parts = s.split()
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            print("กรุณาใส่วันที่ในรูปแบบ 'YYYY MM DD' เช่น 2025 10 01")
+            continue
+        y, m, d = map(int, parts)
+        try:
+            datetime(y, m, d)
+            return y, m, d
+        except ValueError:
+            print("วันที่ไม่ถูกต้อง กรุณาลองใหม่")
 
-Cars by Brand (Active only):
-"""
-                
-                brands = {}
-                for car in active_cars:
-                    brands[car.brand] = brands.get(car.brand, 0) + 1
-                
-                for brand, count in sorted(brands.items()):
-                    report_content += f"- {brand}: {count}\n"
-            
-            report_content += f"""
-{'='*60}
-RECENT OPERATIONS
-{'='*60}
-"""
-            
-            for op in operations:
-                op_time = datetime.datetime.fromtimestamp(op.timestamp).strftime('%Y-%m-%d %H:%M:%S')
-                op_type_map = {'A': 'ADD', 'U': 'UPDATE', 'D': 'DELETE', 'V': 'VIEW'}
-                op_type = op_type_map.get(op.operation_type, op.operation_type)
-                report_content += f"{op_time} | {op_type:<8} | Car ID: {op.car_id} | {op.details}\n"
-            
-            report_content += f"""
-{'='*60}
-System Status: Running
-Available Slots: {1000 - total_cars}
-Last Updated: {now.strftime('%Y-%m-%d %H:%M:%S')}
-"""
-            
-            # Write to text file
-            with open(REPORT_FILE, 'w', encoding='utf-8') as f:
-                f.write(report_content)
-            
-            print(f"✅ สร้างรายงานสำเร็จ! ไฟล์: {REPORT_FILE}")
-            print(f"ขนาดไฟล์: {os.path.getsize(REPORT_FILE)} bytes")
-            
-            # Show preview
-            preview = input("\nดูตัวอย่างรายงาน? (y/n): ").strip().lower()
-            if preview == 'y':
-                print("\n" + "="*60)
-                print("PREVIEW REPORT")
-                print("="*60)
-                print(report_content[:1000] + "..." if len(report_content) > 1000 else report_content)
-            
-            # Log operation
-            self._log_operation(0, 'V', 'Generated report')
-            
-        except Exception as e:
-            print(f"❌ เกิดข้อผิดพลาด: {e}")
-    
-    def display_main_menu(self):
-        """Display main menu"""
-        print("\n" + "="*60)
-        print("ระบบจัดการรถเช่า (Car Rental Management System)")
-        print("Binary File Storage with Python struct")
-        print("="*60)
-        print("1) Add (เพิ่ม)")
-        print("2) Update (แก้ไข)")
-        print("3) Delete (ลบ)")
-        print("4) View (ดู)")
-        print("   - ดูรายการเดียว")
-        print("   - ดูทั้งหมด")
-        print("   - ดูแบบกรอง")
-        print("   - สถิติโดยสรุป")
-        print("5) Generate Report (.txt)")
-        print("0) Exit (ออก)")
-        print("="*60)
-    
-    def run(self):
-        """Main program loop"""
-        print("🚗 ระบบจัดการรถเช่า - Car Rental Management System")
-        print("📁 Binary File Storage with Python struct module")
-        print("🔧 Python 3.10+ | Little-Endian | Fixed-length Records")
-        
-        while True:
-            self.display_main_menu()
-            
-            choice = input("\nเลือกการทำงาน (1-5, 0): ").strip()
-            
-            if choice == '1':
-                self.add_car()
-            elif choice == '2':
-                self.update_car()
-            elif choice == '3':
-                self.delete_car()
-            elif choice == '4':
-                self.view_menu()
-            elif choice == '5':
-                self.generate_report()
-            elif choice == '0':
-                print("\n🔒 ปิดโปรแกรมอย่างปลอดภัย...")
-                print("💾 Flushing buffers and syncing data...")
-                
-                # Safe shutdown - ensure all data is written
-                try:
-                    # Force sync all files
-                    for filename in [CARS_FILE, OPERATIONS_FILE, SEQUENCE_FILE]:
-                        if os.path.exists(filename):
-                            with open(filename, 'r+b') as f:
-                                f.flush()
-                                os.fsync(f.fileno())
-                    
-                    # Generate final report automatically
-                    print("📄 Auto-generating final report...")
-                    self.generate_report()
-                    
-                    print("✅ ข้อมูลทั้งหมดถูกบันทึกแล้ว")
-                    print("👋 ขอบคุณที่ใช้งาน Car Rental Management System")
-                    
-                except Exception as e:
-                    print(f"⚠️  Warning during shutdown: {e}")
-                
-                break
-            else:
-                print("❌ กรุณาเลือก 1-5 หรือ 0")
-                
-def main():
-    """Main function"""
-    parser = argparse.ArgumentParser(
-        description='Car Rental Management System with Binary File Storage',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent('''
-        Examples:
-          python car_rental_system.py          # Run interactive mode
-          
-        Binary Files:
-          - cars.dat:        Main car records (72 bytes/record)
-          - operations.dat:  Operation logs (32 bytes/record)  
-          - sequence.dat:    ID sequence tracking (4 bytes)
-          - report.txt:      Text report output
-          
-        Struct Formats:
-          - Car: '<I12s12s16sIfIBBII' (Little-Endian, 72 bytes)
-          - Operation: '<IIcI20s' (Little-Endian, 32 bytes)
-          - Sequence: '<I' (Little-Endian, 4 bytes)
-        ''')
+
+def days_between(start_ts: int, end_ts: int) -> int:
+    if end_ts < start_ts:
+        return 0
+    d = (end_ts - start_ts) // 86400
+    return 1 if d == 0 else int(d)
+
+
+# ---------- Thai-safe ASCII table ----------
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", "" if s is None else str(s))
+
+
+def _char_width(ch: str) -> int:
+    return 0 if unicodedata.combining(ch) else 1
+
+
+def display_width(s: str) -> int:
+    return sum(_char_width(ch) for ch in _nfc(s))
+
+
+def cut_to_width(s: str, width: int) -> str:
+    s = _nfc(s)
+    w = 0
+    out = []
+    for ch in s:
+        cw = _char_width(ch)
+        if w + cw > width:
+            break
+        out.append(ch)
+        w += cw
+    while out and unicodedata.combining(out[-1]):
+        out.pop()
+    return "".join(out)
+
+
+def make_ascii_table(headers, rows, widths, aligns) -> list[str]:
+    def fmt_cell(text, w, a):
+        text = cut_to_width("" if text is None else str(text), w)
+        pad = w - display_width(text)
+        if a == "r":
+            return " " * pad + text
+        if a == "c":
+            return " " * (pad // 2) + text + " " * (pad - pad // 2)
+        return text + " " * pad
+
+    def rule(ch="-"):
+        return "+" + "+".join(ch * (w + 2) for w in widths) + "+"
+
+    out = [rule("-")]
+    out.append(
+        "|"
+        + "|".join(" " + fmt_cell(h, w, "c") + " " for h, w in zip(headers, widths))
+        + "|"
     )
-    
-    parser.add_argument('--version', action='version', version='Car Rental System 1.0')
-    parser.add_argument('--info', action='store_true', help='Show system information')
-    
-    args = parser.parse_args()
-    
-    if args.info:
-        print("Car Rental Management System")
-        print("="*40)
-        print("Version: 1.0")
-        print("Python: 3.10+")
-        print("Platform: Terminal")
-        print("Storage: Binary Files (struct)")
-        print("Endianness: Little-Endian")
-        print("Records: Fixed-length")
-        print("Files:")
-        print("  - cars.dat (72 bytes/record)")
-        print("  - operations.dat (32 bytes/record)")
-        print("  - sequence.dat (4 bytes)")
-        print("  - report.txt (text output)")
-        return
-    
-    # Run the system
-    try:
-        system = CarRentalSystem()
-        system.run()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  โปรแกรมถูกหยุดโดย Ctrl+C")
-        print("💾 บันทึกข้อมูลฉุกเฉิน...")
-    except Exception as e:
-        print(f"\n❌ เกิดข้อผิดพลาดร้าย: {e}")
-        print("📝 กรุณาตรวจสอบไฟล์ข้อมูลและเริ่มโปรแกรมใหม่")
+    out.append(rule("="))
+    for r in rows:
+        out.append(
+            "|"
+            + "|".join(
+                " " + fmt_cell(c, w, a) + " " for c, w, a in zip(r, widths, aligns)
+            )
+            + "|"
+        )
+    out.append(rule("-"))
+    return out
 
+
+# ---------- Binary I/O ----------
+def append_record(path: str, blob: bytes) -> None:
+    with open(path, "ab") as f:
+        f.write(blob)
+
+
+def write_record(path: str, index: int, rec_size: int, blob: bytes) -> None:
+    with open(path, "r+b") as f:
+        f.seek(index * rec_size)
+        f.write(blob)
+
+
+def read_records(path: str, rec_size: int) -> list[bytes]:
+    out = []
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(rec_size)
+            if not b or len(b) < rec_size:
+                break
+            out.append(b)
+    return out
+
+
+# ---------- Pack / Unpack ----------
+def pack_car(d: dict) -> bytes:
+    return struct.pack(
+        CAR_FMT,
+        d["car_id"],
+        _pad(d["plate"], 12),
+        _pad(d["brand"], 12),
+        _pad(d["model"], 16),
+        d["year"],
+        float(d["rate"]),
+        d["status"],
+        d["is_rented"],
+        d["created_at"],
+        d["updated_at"],
+    )
+
+
+def unpack_car(b: bytes) -> dict:
+    i, plate, brand, model, year, rate, st, is_rented, c_at, u_at = struct.unpack(
+        CAR_FMT, b
+    )
+    return dict(
+        car_id=i,
+        plate=_unpad(plate),
+        brand=_unpad(brand),
+        model=_unpad(model),
+        year=year,
+        rate=round(rate, 2),
+        status=st,
+        is_rented=is_rented,
+        created_at=c_at,
+        updated_at=u_at,
+    )
+
+
+def pack_customer(d: dict) -> bytes:
+    return struct.pack(
+        CUST_FMT,
+        d["customer_id"],
+        _pad(d["id_card"], 15),
+        _pad(d["name"], 60),
+        _pad(d["phone"], 12),
+        d["status"],
+        d["created_at"],
+        d["updated_at"],
+    )
+
+
+def unpack_customer(b: bytes) -> dict:
+    i, idc, name, phone, st, c_at, u_at = struct.unpack(CUST_FMT, b)
+    return dict(
+        customer_id=i,
+        id_card=_unpad(idc),
+        name=_unpad(name),
+        phone=_unpad(phone),
+        status=st,
+        created_at=c_at,
+        updated_at=u_at,
+    )
+
+
+def pack_rental(d: dict) -> bytes:
+    return struct.pack(
+        RENT_FMT,
+        d["rental_id"],
+        d["car_id"],
+        d["customer_id"],
+        d["start_ts"],
+        d["end_ts"],
+        d["total_days"],
+        float(d["total_amount"]),
+        d["status"],
+        d["created_at"],
+        d["updated_at"],
+    )
+
+
+def unpack_rental(b: bytes) -> dict:
+    rid, car_id, customer_id, s, e, days, amt, st, c_at, u_at = struct.unpack(
+        RENT_FMT, b
+    )
+    return dict(
+        rental_id=rid,
+        car_id=car_id,
+        customer_id=customer_id,
+        start_ts=s,
+        end_ts=e,
+        total_days=days,
+        total_amount=round(amt, 2),
+        status=st,
+        created_at=c_at,
+        updated_at=u_at,
+    )
+
+
+# ---------- Loaders ----------
+def load_cars() -> list[dict]:
+    return [unpack_car(b) for b in read_records(CARS_PATH, CAR_SIZE)]
+
+
+def load_customers() -> list[dict]:
+    return [unpack_customer(b) for b in read_records(CUSTOMERS_PATH, CUST_SIZE)]
+
+
+def load_rentals() -> list[dict]:
+    return [unpack_rental(b) for b in read_records(RENT_A_CAR_PATH, RENT_SIZE)]
+
+
+# ---------- Cars ----------
+def car_add():
+    cars = load_cars()
+    car_id = input_int("car_id: ", min_val=1)
+    if any(c["car_id"] == car_id for c in cars):
+        print("car_id นี้มีอยู่แล้ว")
+        return
+    plate = input("ทะเบียนรถ (<=12): ").strip()
+    brand = input("Brand (<=12): ").strip()
+    model = input("Model (<=16): ").strip()
+    year = input_int("ปีรถ: ", min_val=1900, max_val=datetime.now().year)
+    rate = input_float("ค่าเช่าต่อวัน: ", min_val=0)
+    ts = now_ts()
+    d = dict(
+        car_id=car_id,
+        plate=plate,
+        brand=brand,
+        model=model,
+        year=year,
+        rate=rate,
+        status=1,
+        is_rented=0,
+        created_at=ts,
+        updated_at=ts,
+    )
+    append_record(CARS_PATH, pack_car(d))
+    print("เพิ่มรถใหม่เรียบร้อย")
+
+
+def car_update():
+    cars = load_cars()
+    car_id = input_int("car_id ที่จะแก้ไข: ", min_val=1)
+    idx = next((i for i, c in enumerate(cars) if c["car_id"] == car_id), -1)
+    if idx < 0:
+        print("ไม่พบ car_id นี้")
+        return
+    car = cars[idx]
+    print("Enter เพื่อข้าม ไม่แก้ไข")
+    rate = input_float("rate ใหม่ (เว้นว่าง=คงเดิม): ", allow_blank=True, min_val=0)
+    year = input_int(
+        "year ใหม่ (เว้นว่าง=คงเดิม): ", allow_blank=True, min_val=1900, max_val=2100
+    )
+    plate = input("plate ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    brand = input("brand ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    model = input("model ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    status = input_int(
+        "status ใหม่ (1=active,0=inactive) (เว้นว่าง=คงเดิม): ",
+        allow_blank=True,
+        min_val=0,
+        max_val=1,
+    )
+    if rate is not None:
+        car["rate"] = rate
+    if year is not None:
+        car["year"] = year
+    if plate:
+        car["plate"] = plate
+    if brand:
+        car["brand"] = brand
+    if model:
+        car["model"] = model
+    if status is not None:
+        car["status"] = status
+    car["updated_at"] = now_ts()
+    write_record(CARS_PATH, idx, CAR_SIZE, pack_car(car))
+    print("แก้ไขรถเรียบร้อย")
+
+
+def car_delete():
+    cars = load_cars()
+    car_id = input_int("car_id ที่จะลบ (mark inactive): ", min_val=1)
+    idx = next((i for i, c in enumerate(cars) if c["car_id"] == car_id), -1)
+    if idx < 0:
+        print("  * ไม่พบ")
+        return
+    car = cars[idx]
+    car["status"] = 0
+    car["updated_at"] = now_ts()
+    write_record(CARS_PATH, idx, CAR_SIZE, pack_car(car))
+    print("  * ตั้งสถานะ Inactive แล้ว")
+
+
+def car_view():
+    sub = input(
+        dedent(
+            """
+        เลือกดูรายการรถ:
+          1) รายการเดียว (car_id)
+          2) ทั้งหมด
+          3) เฉพาะ Active
+        เลือก: """
+        )
+    ).strip()
+    cars = load_cars()
+    if sub == "1":
+        x = input_int("car_id: ", min_val=1)
+        for c in cars:
+            if c["car_id"] == x:
+                print(c)
+                break
+        else:
+            print("  * ไม่พบ")
+    elif sub == "2":
+        for c in cars:
+            print(c)
+        print(f"รวม {len(cars)}")
+    elif sub == "3":
+        act = [c for c in cars if c["status"] == 1]
+        for c in act:
+            print(c)
+        print(f"Active {len(act)} / {len(cars)}")
+
+
+# ---------- Customers ----------
+def cust_add():
+    customers = load_customers()
+    customer_id = input_int("customer_id: ", min_val=1)
+    if any(c["customer_id"] == customer_id for c in customers):
+        print("customer_id นี้มีอยู่แล้ว")
+        return
+    id_card = input("เลขใบอนุญาตขับรถ/บัตร: ").strip()
+    name = input("ชื่อ: ").strip()
+    phone = input("เบอร์โทรศัพท์: ").strip()
+    ts = now_ts()
+    d = dict(
+        customer_id=customer_id,
+        id_card=id_card,
+        name=name,
+        phone=phone,
+        status=1,
+        created_at=ts,
+        updated_at=ts,
+    )
+    append_record(CUSTOMERS_PATH, pack_customer(d))
+    print("เพิ่มลูกค้าใหม่เรียบร้อย")
+
+
+def cust_update():
+    customers = load_customers()
+    customer_id = input_int("customer_id ที่จะแก้ไข: ", min_val=1)
+    idx = next(
+        (i for i, c in enumerate(customers) if c["customer_id"] == customer_id), -1
+    )
+    if idx < 0:
+        print("ไม่พบ customer_id นี้")
+        return
+    cust = customers[idx]
+    print("Enter เพื่อข้าม ไม่แก้ไข")
+    id_card = input("เลขใบอนุญาต/บัตร ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    name = input("ชื่อ ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    phone = input("เบอร์โทรศัพท์ ใหม่ (เว้นว่าง=คงเดิม): ").strip()
+    status = input_int(
+        "status ใหม่ (1=active,0=inactive) (เว้นว่าง=คงเดิม): ",
+        allow_blank=True,
+        min_val=0,
+        max_val=1,
+    )
+    if id_card:
+        cust["id_card"] = id_card
+    if name:
+        cust["name"] = name
+    if phone:
+        cust["phone"] = phone
+    if status is not None:
+        cust["status"] = status
+    cust["updated_at"] = now_ts()
+    write_record(CUSTOMERS_PATH, idx, CUST_SIZE, pack_customer(cust))
+    print("แก้ไขลูกค้าเรียบร้อย")
+
+
+def cust_delete():
+    customers = load_customers()
+    customer_id = input_int("customer_id ที่จะลบ (mark inactive): ", min_val=1)
+    idx = next(
+        (i for i, c in enumerate(customers) if c["customer_id"] == customer_id), -1
+    )
+    if idx < 0:
+        print("  * ไม่พบ")
+        return
+    cust = customers[idx]
+    cust["status"] = 0
+    cust["updated_at"] = now_ts()
+    write_record(CUSTOMERS_PATH, idx, CUST_SIZE, pack_customer(cust))
+    print("  * ตั้งสถานะ Inactive แล้ว")
+
+
+def cust_view():
+    sub = input(
+        dedent(
+            """
+        เลือกดูข้อมูลลูกค้า:
+          1) รายการเดียว 
+          2) ทั้งหมด
+          3) เฉพาะ Active
+        เลือก: """
+        )
+    ).strip()
+    customers = load_customers()
+    if sub == "1":
+        x = input_int("customer_id: ", min_val=1)
+        for c in customers:
+            if c["customer_id"] == x:
+                print(c)
+                break
+        else:
+            print("  * ไม่พบ")
+    elif sub == "2":
+        for c in customers:
+            print(c)
+        print(f"รวม {len(customers)}")
+    elif sub == "3":
+        act = [c for c in customers if c["status"] == 1]
+        for c in act:
+            print(c)
+        print(f"Active {len(act)} / {len(customers)}")
+
+
+# ---------- Rentals ----------
+def rental_add():
+    cars = load_cars()
+    customers = load_customers()
+    rentals = load_rentals()
+
+    rental_id = input_int("rental_id: ", min_val=1)
+    if any(r["rental_id"] == rental_id for r in rentals):
+        print("rental_id นี้มีอยู่แล้ว")
+        return
+
+    car_id = input_int("car_id ที่จะเช่า: ", min_val=1)
+    car = next((c for c in cars if c["car_id"] == car_id and c["status"] == 1), None)
+    if not car:
+        print("ไม่พบ car_id นี้ หรือ รถไม่ Active")
+        return
+    if car["is_rented"]:
+        print("รถคันนี้ถูกเช่าไปแล้ว")
+        return
+
+    customer_id = input_int("customer_id: ", min_val=1)
+    cust = next(
+        (c for c in customers if c["customer_id"] == customer_id and c["status"] == 1),
+        None,
+    )
+    if not cust:
+        print("ไม่พบ customer_id นี้ หรือ ลูกค้าไม่ Active")
+        return
+
+    print("วันที่เริ่มเช่า (YYYY MM DD):")
+    y, m, d = read_date("  เริ่มเช่า: ")
+    print("วันที่คืน (YYYY MM DD):")
+    y2, m2, d2 = read_date("  คืน: ")
+
+    start = int(datetime(y, m, d).timestamp())
+    end = int(datetime(y2, m2, d2).timestamp())
+    if end < start:
+        print("วันที่คืน ต้องไม่ก่อนวันที่เริ่มเช่า")
+        return
+
+    dd = days_between(start, end) or 1
+    total_amount = round(dd * float(car["rate"]), 2)
+    ts = now_ts()
+    rec = dict(
+        rental_id=rental_id,
+        car_id=car_id,
+        customer_id=customer_id,
+        start_ts=start,
+        end_ts=end,
+        total_days=dd,
+        total_amount=total_amount,
+        status=1,
+        created_at=ts,
+        updated_at=ts,
+    )  # status=1 เปิดอยู่
+    append_record(RENT_A_CAR_PATH, pack_rental(rec))
+
+    # อัพเดทสถานะรถเป็นถูกเช่า
+    idx = next(i for i, c in enumerate(cars) if c["car_id"] == car_id)
+    car["is_rented"] = 1
+    car["updated_at"] = ts
+    write_record(CARS_PATH, idx, CAR_SIZE, pack_car(car))
+    print("เพิ่มการเช่าเรียบร้อย")
+    print(f"จำนวนวันเช่า: {dd} วัน")
+    print(f"รวมค่าเช่า: {total_amount:.2f} บาท")
+
+
+def rental_update_close():
+    cars = load_cars()
+    rentals = load_rentals()
+    rental_id = input_int("rental_id ที่จะปิด: ", min_val=1)
+    idx = next((i for i, r in enumerate(rentals) if r["rental_id"] == rental_id), -1)
+    if idx < 0:
+        print("ไม่พบ rental_id นี้")
+        return
+    rent = rentals[idx]
+    if rent["status"] == -1:
+        print("การเช่านี้ถูกลบไปแล้ว")
+        return
+    rent["status"] = 0
+    rent["updated_at"] = now_ts()
+    write_record(RENT_A_CAR_PATH, idx, RENT_SIZE, pack_rental(rent))
+    # คืนรถ
+    car_idx = next((i for i, c in enumerate(cars) if c["car_id"] == rent["car_id"]), -1)
+    if car_idx >= 0:
+        car = cars[car_idx]
+        car["is_rented"] = 0
+        car["updated_at"] = rent["updated_at"]
+        write_record(CARS_PATH, car_idx, CAR_SIZE, pack_car(car))
+    print("ปิดงานเช่าเรียบร้อย")
+
+
+def rental_delete():
+    rentals = load_rentals()
+    rental_id = input_int("rental_id ที่จะลบ : ", min_val=1)
+    idx = next((i for i, r in enumerate(rentals) if r["rental_id"] == rental_id), -1)
+    if idx < 0:
+        print("  * ไม่พบ")
+        return
+    rent = rentals[idx]
+    rent["status"] = -1
+    rent["updated_at"] = now_ts()
+    write_record(RENT_A_CAR_PATH, idx, RENT_SIZE, pack_rental(rent))
+    print("  * ตั้งสถานะ Deleted แล้ว")
+
+
+def rental_view():
+    sub = input(
+        dedent(
+            """
+        เลือกดูข้อมูลการเช่า:
+          1) รายการเดียว 
+          2) ทั้งหมด
+          3) เฉพาะเปิดอยู่ (status=1)
+          4) เฉพาะปิดแล้ว (status=0)
+        เลือก: """
+        )
+    ).strip()
+    rentals = load_rentals()
+    if sub == "1":
+        x = input_int("rental_id: ", min_val=1)
+        for r in rentals:
+            if r["rental_id"] == x:
+                print(r)
+                break
+        else:
+            print("  * ไม่พบ")
+    elif sub == "2":
+        for r in rentals:
+            print(r)
+        print(f"รวม {len(rentals)}")
+    elif sub == "3":
+        opn = [r for r in rentals if r["status"] == 1]
+        for r in opn:
+            print(r)
+        print(f"เปิดอยู่ {len(opn)} / {len(rentals)}")
+    elif sub == "4":
+        closed = [r for r in rentals if r["status"] == 0]
+        for r in closed:
+            print(r)
+        print(f"ปิดแล้ว {len(closed)} / {len(rentals)}")
+
+
+# ---------- Report ----------
+def generate_report():
+    cars = load_cars()
+    customers = load_customers()
+    rentals = load_rentals()
+
+    cust_by_id = {c["customer_id"]: c for c in customers}
+
+    latest_by_car: dict[int, dict] = {}
+    for r in rentals:
+        if r["status"] < 0:
+            continue
+        prev = latest_by_car.get(r["car_id"])
+        if (prev is None) or (r["updated_at"] > prev["updated_at"]):
+            latest_by_car[r["car_id"]] = r
+
+    headers = [
+        "Car ID",
+        "License Plate",
+        "Brand",
+        "Model",
+        "Year",
+        "Rate (THB/Day)",
+        "Status",
+        "Tel",
+        "Customer name",
+        "ID Card",
+        "Date_Rent",
+        "Return_Date",
+        "Rental Day",
+        "Total Price",
+    ]
+    widths = [6, 13, 12, 12, 6, 14, 9, 14, 26, 16, 11, 11, 11, 12]
+    aligns = ["r", "l", "l", "l", "r", "r", "c", "l", "l", "l", "c", "c", "r", "r"]
+
+    rows = []
+    for c in sorted(cars, key=lambda x: x["car_id"]):
+        st = "Active" if c["status"] == 1 else "Inactive"
+        tel = cust_name = id_card = sdate = edate = "-"
+        ddays = 0
+        total = 0.0
+        r = latest_by_car.get(c["car_id"])
+        if r:
+            cu = cust_by_id.get(r["customer_id"])
+            if cu and cu["status"] == 1:
+                tel = cu["phone"] or "-"
+                cust_name = cu["name"] or "-"
+                id_card = cu["id_card"] or "-"
+            sdate = ts2dmy(r["start_ts"])
+            edate = ts2dmy(r["end_ts"])
+            ddays = r["total_days"]
+            total = r["total_amount"]
+
+        rows.append(
+            [
+                str(c["car_id"]),
+                c["plate"],
+                c["brand"],
+                c["model"],
+                str(c["year"]),
+                f"{float(c['rate']):.2f}",
+                st,
+                tel,
+                cust_name,
+                id_card,
+                sdate,
+                edate,
+                str(ddays),
+                f"{total:.0f}",
+            ]
+        )
+
+    lines = []
+    lines.append("Car Rent System — Summary Report")
+    lines.append(f"Generated At : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("App Version  : 1.0")
+    lines.append("Endianness   : Little-Endian")
+    lines.append("Encoding     : UTF-8 (fixed-length)")
+    lines.append("")
+    lines.extend(make_ascii_table(headers, rows, widths, aligns))
+    lines.append("")
+
+    active = [c for c in cars if c["status"] == 1]
+    rates = [c["rate"] for c in active]
+    lines.append("Summary (เฉพาะรถสถานะ Active)")
+    lines.append(f"- Total Cars (records) : {len(cars)}")
+    lines.append(f"- Active Cars          : {len(active)}")
+    lines.append(f"- Inactive/Deleted     : {len(cars)-len(active)}")
+    lines.append(
+        f"- Currently Rented     : {sum(1 for c in cars if c['is_rented']==1)}"
+    )
+    lines.append(
+        f"- Available Now        : {sum(1 for c in active if c['is_rented']==0)}"
+    )
+    lines.append("")
+    if rates:
+        lines.append("Rate Statistics (THB/day, Active only)")
+        lines.append(f"- Min : {min(rates):.2f}")
+        lines.append(f"- Max : {max(rates):.2f}")
+        lines.append(f"- Avg : {sum(rates)/len(rates):.2f}")
+        lines.append("")
+    by_brand = {}
+    for c in active:
+        by_brand[c["brand"]] = by_brand.get(c["brand"], 0) + 1
+    lines.append("Cars by Brand (Active only)")
+    for b, n in sorted(by_brand.items()):
+        lines.append(f"- {b} : {n}")
+
+    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"> สร้างรายงานแล้ว: {REPORT_PATH}")
+
+
+# ---------- เมนู ----------
+MAIN_MENU = dedent(
+    """
+    ===================== MENU =====================
+    1) Add (เพิ่ม)
+    2) Update (แก้ไข)
+    3) Delete (ลบ)
+    4) View (ดู)
+    5) Generate Report (.txt)
+    0) Exit (ออก)
+    ================================================
+"""
+)
+
+
+def pick_table() -> str | None:
+    s = input("เลือกตาราง: 1=cars  2=customers  3=rentals  (ยกเลิก=Enter): ").strip()
+    return {"1": "cars", "2": "customers", "3": "rentals"}.get(s)
+
+
+def run_menu():
+    create_file()
+    while True:
+        print(MAIN_MENU)
+        choice = input("เลือกเมนู: ").strip()
+        if choice == "1":
+            t = pick_table()
+            if t == "cars":
+                car_add()
+            elif t == "customers":
+                cust_add()
+            elif t == "rentals":
+                rental_add()
+        elif choice == "2":
+            t = pick_table()
+            if t == "cars":
+                car_update()
+            elif t == "customers":
+                cust_update()
+            elif t == "rentals":
+                rental_update_close()
+        elif choice == "3":
+            t = pick_table()
+            if t == "cars":
+                car_delete()
+            elif t == "customers":
+                cust_delete()
+            elif t == "rentals":
+                rental_delete()
+        elif choice == "4":
+            t = pick_table()
+            if t == "cars":
+                car_view()
+            elif t == "customers":
+                cust_view()
+            elif t == "rentals":
+                rental_view()
+        elif choice == "5":
+            generate_report()
+        elif choice == "0":
+            generate_report()
+            print("ออกโปรแกรมแล้ว (สร้างรายงานอัตโนมัติ)")
+            break
+        else:
+            print("  * เมนูไม่ถูกต้อง")
+
+
+# ---------- จุดเริ่มโปรแกรม ----------
 if __name__ == "__main__":
-    main()
+    run_menu()

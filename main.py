@@ -1,3 +1,7 @@
+# -*- coding: utf-8 -*-
+# ระบบเช่ารถแบบไฟล์ไบนารี fixed-length (Little-Endian) ใช้เฉพาะ Python Stdlib
+# CRUD: Add/Update/Delete/View และสร้างรายงาน report.txt
+
 import os, struct, time, unicodedata
 from datetime import datetime
 from textwrap import dedent
@@ -23,35 +27,42 @@ CUST_SIZE = struct.calcsize(CUST_FMT)
 # rentals.dat:
 #   i rental_id | i car_id | i customer_id | i start_ts | i end_ts |
 #   i total_days | f total_amount | i status(1=open,0=closed,-1=deleted) | i created_at | i updated_at
-RENT_FMT = "<iiiiiifiii"  # 6*i + f + 3*i
+RENT_FMT = "<iiiiiifiii"  # 6*i + f + 3*i = 10 ฟิลด์
 RENT_SIZE = struct.calcsize(RENT_FMT)
 
 
 # ---------- Utils ----------
 def _pad(s: str, length: int) -> bytes:
+    """ตัด/เติม NUL ให้สายอักขระยาวคงที่"""
     b = (s or "").encode("utf-8")
     return (b[:length] + b"\x00" * max(0, length - len(b))) if len(b) != length else b
 
 
 def _unpad(b: bytes) -> str:
+    """ตัด NUL ด้านท้าย"""
     return b.rstrip(b"\x00").decode("utf-8", errors="ignore")
 
 
 def now_ts() -> int:
+    """UNIX timestamp (วินาที)"""
     return int(time.time())
 
 
 def ts2dmy(ts: int) -> str:
+    """แปลง timestamp -> DD/MM/YYYY (ถ้า 0 คืน '-')"""
     return datetime.fromtimestamp(ts).strftime("%d/%m/%Y") if ts else "-"
 
 
 def create_file():
+    """สร้างไฟล์เปล่าหากยังไม่มี"""
     for path in (CARS_PATH, CUSTOMERS_PATH, RENT_A_CAR_PATH):
         if not os.path.exists(path):
             open(path, "wb").close()
 
 
+# --- ตัวช่วยรับอินพุตตัวเลข ---
 def input_int(msg: str, allow_blank=False, min_val=None, max_val=None) -> int | None:
+    """รับจำนวนเต็ม + ตรวจช่วงค่า"""
     while True:
         s = input(msg).strip()
         if allow_blank and s == "":
@@ -72,6 +83,7 @@ def input_int(msg: str, allow_blank=False, min_val=None, max_val=None) -> int | 
 def input_float(
     msg: str, allow_blank=False, min_val=None, max_val=None
 ) -> float | None:
+    """รับจำนวนจริง + ตรวจช่วงค่า"""
     while True:
         s = input(msg).strip()
         if allow_blank and s == "":
@@ -91,6 +103,7 @@ def input_float(
 
 
 def read_date(prompt: str) -> tuple[int, int, int]:
+    """รับวันที่รูปแบบเดียว 'YYYY MM DD' และ validate"""
     while True:
         s = input(prompt).strip()
         parts = s.split()
@@ -106,6 +119,7 @@ def read_date(prompt: str) -> tuple[int, int, int]:
 
 
 def days_between(start_ts: int, end_ts: int) -> int:
+    """คืนจำนวนวัน (อย่างน้อย 1) ถ้า end >= start"""
     if end_ts < start_ts:
         return 0
     d = (end_ts - start_ts) // 86400
@@ -126,6 +140,7 @@ def display_width(s: str) -> int:
 
 
 def cut_to_width(s: str, width: int) -> str:
+    """ตัดสตริงตามความกว้างแสดงผล เลี่ยงจบด้วยวรรณยุกต์/สระลอย"""
     s = _nfc(s)
     w = 0
     out = []
@@ -141,6 +156,8 @@ def cut_to_width(s: str, width: int) -> str:
 
 
 def make_ascii_table(headers, rows, widths, aligns) -> list[str]:
+    """วาดตาราง ASCII (+---+) รองรับอักษรไทย"""
+
     def fmt_cell(text, w, a):
         text = cut_to_width("" if text is None else str(text), w)
         pad = w - display_width(text)
@@ -310,9 +327,9 @@ def car_add():
     if any(c["car_id"] == car_id for c in cars):
         print("car_id นี้มีอยู่แล้ว")
         return
-    plate = input("ทะเบียนรถ (<=12): ").strip()
-    brand = input("Brand (<=12): ").strip()
-    model = input("Model (<=16): ").strip()
+    plate = input("ทะเบียนรถ: ").strip()
+    brand = input("Brand: ").strip()
+    model = input("Model: ").strip()
     year = input_int("ปีรถ: ", min_val=1900, max_val=datetime.now().year)
     rate = input_float("ค่าเช่าต่อวัน: ", min_val=0)
     ts = now_ts()
@@ -573,11 +590,11 @@ def rental_add():
         total_amount=total_amount,
         status=1,
         created_at=ts,
-        updated_at=ts,
-    )  # status=1 เปิดอยู่
+        updated_at=ts,  # เปิดงานเช่า
+    )
     append_record(RENT_A_CAR_PATH, pack_rental(rec))
 
-    # อัพเดทสถานะรถเป็นถูกเช่า
+    # ตั้งรถเป็นถูกเช่า
     idx = next(i for i, c in enumerate(cars) if c["car_id"] == car_id)
     car["is_rented"] = 1
     car["updated_at"] = ts
@@ -620,6 +637,17 @@ def rental_delete():
         print("  * ไม่พบ")
         return
     rent = rentals[idx]
+    # ถ้าถูกลบขณะเปิดอยู่ ให้คืนรถด้วย
+    if rent["status"] == 1:
+        cars = load_cars()
+        car_idx = next(
+            (i for i, c in enumerate(cars) if c["car_id"] == rent["car_id"]), -1
+        )
+        if car_idx >= 0:
+            car = cars[car_idx]
+            car["is_rented"] = 0
+            car["updated_at"] = now_ts()
+            write_record(CARS_PATH, car_idx, CAR_SIZE, pack_car(car))
     rent["status"] = -1
     rent["updated_at"] = now_ts()
     write_record(RENT_A_CAR_PATH, idx, RENT_SIZE, pack_rental(rent))
@@ -665,18 +693,21 @@ def rental_view():
 
 # ---------- Report ----------
 def generate_report():
+    """รายงานรวมจาก cars/customers/rentals (ไม่ใช้ cars.log)"""
     cars = load_cars()
     customers = load_customers()
     rentals = load_rentals()
 
+    # ลูกค้าไว้ lookup
     cust_by_id = {c["customer_id"]: c for c in customers}
 
+    # การเช่าล่าสุดที่ไม่ถูกลบ ต่อรถหนึ่งคัน
     latest_by_car: dict[int, dict] = {}
     for r in rentals:
-        if r["status"] < 0:
+        if r["status"] < 0:  # ข้าม deleted
             continue
-        prev = latest_by_car.get(r["car_id"])
-        if (prev is None) or (r["updated_at"] > prev["updated_at"]):
+        p = latest_by_car.get(r["car_id"])
+        if (p is None) or (r["updated_at"] > p["updated_at"]):
             latest_by_car[r["car_id"]] = r
 
     headers = [
@@ -686,35 +717,74 @@ def generate_report():
         "Model",
         "Year",
         "Rate (THB/Day)",
-        "Status",
-        "Tel",
+        "Car Status",
+        "Is_Rented",
+        "Customer ID",
         "Customer name",
+        "Tel",
         "ID Card",
+        "Rental ID",
         "Date_Rent",
         "Return_Date",
         "Rental Day",
         "Total Price",
+        "Rental Status",
     ]
-    widths = [6, 13, 12, 12, 6, 14, 9, 14, 26, 16, 11, 11, 11, 12]
-    aligns = ["r", "l", "l", "l", "r", "r", "c", "l", "l", "l", "c", "c", "r", "r"]
+    widths = [6, 13, 12, 12, 6, 14, 11, 9, 12, 26, 14, 16, 10, 11, 11, 11, 12, 14]
+    aligns = [
+        "r",
+        "l",
+        "l",
+        "l",
+        "r",
+        "r",
+        "c",
+        "c",
+        "r",
+        "l",
+        "l",
+        "l",
+        "r",
+        "c",
+        "c",
+        "r",
+        "r",
+        "c",
+    ]
+
+    def car_status_txt(x):
+        return "Active" if x == 1 else "Inactive"
+
+    def rental_status_txt(x):
+        return (
+            "Open"
+            if x == 1
+            else ("Closed" if x == 0 else ("Deleted" if x == -1 else "-"))
+        )
 
     rows = []
     for c in sorted(cars, key=lambda x: x["car_id"]):
-        st = "Active" if c["status"] == 1 else "Inactive"
-        tel = cust_name = id_card = sdate = edate = "-"
+        cust_id = "-"
+        cust_name = tel = id_card = "-"
+        rid = "-"
+        sdate = edate = "-"
         ddays = 0
         total = 0.0
+        rstat = "-"
         r = latest_by_car.get(c["car_id"])
         if r:
-            cu = cust_by_id.get(r["customer_id"])
-            if cu and cu["status"] == 1:
-                tel = cu["phone"] or "-"
-                cust_name = cu["name"] or "-"
-                id_card = cu["id_card"] or "-"
+            rid = str(r["rental_id"])
             sdate = ts2dmy(r["start_ts"])
             edate = ts2dmy(r["end_ts"])
             ddays = r["total_days"]
             total = r["total_amount"]
+            rstat = rental_status_txt(r["status"])
+            cu = cust_by_id.get(r["customer_id"])
+            if cu and cu["status"] == 1:
+                cust_id = str(cu["customer_id"])
+                cust_name = cu["name"] or "-"
+                tel = cu["phone"] or "-"
+                id_card = cu["id_card"] or "-"
 
         rows.append(
             [
@@ -724,49 +794,56 @@ def generate_report():
                 c["model"],
                 str(c["year"]),
                 f"{float(c['rate']):.2f}",
-                st,
-                tel,
+                car_status_txt(c["status"]),
+                ("Yes" if c["is_rented"] else "No"),
+                cust_id,
                 cust_name,
+                tel,
                 id_card,
+                rid,
                 sdate,
                 edate,
                 str(ddays),
                 f"{total:.0f}",
+                rstat,
             ]
         )
 
-    lines = []
-    lines.append("Car Rent System — Summary Report")
-    lines.append(f"Generated At : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("App Version  : 1.0")
-    lines.append("Endianness   : Little-Endian")
-    lines.append("Encoding     : UTF-8 (fixed-length)")
-    lines.append("")
-    lines.extend(make_ascii_table(headers, rows, widths, aligns))
-    lines.append("")
+    # ส่วนหัวรายงาน
+    lines = [
+        "Car Rent System — Summary Report",
+        f"Generated At : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "App Version  : 1.0",
+        "Endianness   : Little-Endian",
+        "Encoding     : UTF-8 (fixed-length)",
+        "",
+    ]
+    # ตารางหลัก
+    lines += make_ascii_table(headers, rows, widths, aligns) + [""]
 
-    active = [c for c in cars if c["status"] == 1]
-    rates = [c["rate"] for c in active]
-    lines.append("Summary (เฉพาะรถสถานะ Active)")
-    lines.append(f"- Total Cars (records) : {len(cars)}")
-    lines.append(f"- Active Cars          : {len(active)}")
-    lines.append(f"- Inactive/Deleted     : {len(cars)-len(active)}")
-    lines.append(
-        f"- Currently Rented     : {sum(1 for c in cars if c['is_rented']==1)}"
-    )
-    lines.append(
-        f"- Available Now        : {sum(1 for c in active if c['is_rented']==0)}"
-    )
-    lines.append("")
+    # สรุปท้ายรายงาน (เฉพาะรถ Active)
+    active = [x for x in cars if x["status"] == 1]
+    rates = [x["rate"] for x in active]
+    lines += [
+        "Summary (เฉพาะรถสถานะ Active)",
+        f"- Total Cars (records) : {len(cars)}",
+        f"- Active Cars          : {len(active)}",
+        f"- Inactive/Deleted     : {len(cars)-len(active)}",
+        f"- Currently Rented     : {sum(1 for x in cars if x['is_rented']==1)}",
+        f"- Available Now        : {sum(1 for x in active if x['is_rented']==0)}",
+        "",
+    ]
     if rates:
-        lines.append("Rate Statistics (THB/day, Active only)")
-        lines.append(f"- Min : {min(rates):.2f}")
-        lines.append(f"- Max : {max(rates):.2f}")
-        lines.append(f"- Avg : {sum(rates)/len(rates):.2f}")
-        lines.append("")
+        lines += [
+            "Rate Statistics (THB/day, Active only)",
+            f"- Min : {min(rates):.2f}",
+            f"- Max : {max(rates):.2f}",
+            f"- Avg : {sum(rates)/len(rates):.2f}",
+            "",
+        ]
     by_brand = {}
-    for c in active:
-        by_brand[c["brand"]] = by_brand.get(c["brand"], 0) + 1
+    for x in active:
+        by_brand[x["brand"]] = by_brand.get(x["brand"], 0) + 1
     lines.append("Cars by Brand (Active only)")
     for b, n in sorted(by_brand.items()):
         lines.append(f"- {b} : {n}")

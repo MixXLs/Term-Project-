@@ -222,9 +222,9 @@ def add_customer():
         return
     d = {
         "customer_id": cid,
-        "id_card": ask_str("ID Card (15B): ", 15),
-        "name": ask_str("Name (60B): ", 60),
-        "tel": ask_str("Tel (12B): ", 12),
+        "id_card": ask_str("ID Card : ", 15),
+        "name": ask_str("Name : ", 60),
+        "tel": ask_str("Tel : ", 12),
     }
     append_record(CUST_PATH, CUSTOMER_FMT, pack_customer(d))
     print("  ✓ บันทึกลูกค้าแล้ว")
@@ -239,9 +239,9 @@ def add_car():
         return
     d = {
         "car_id": cid,
-        "plate": ask_str("License plate (12B): ", 12),
-        "brand": ask_str("Brand (12B): ", 12),
-        "model": ask_str("Model (16B): ", 16),
+        "plate": ask_str("License plate : ", 12),
+        "brand": ask_str("Brand : ", 12),
+        "model": ask_str("Model : ", 16),
         "year": ask_int("Year: ", 1900, 2100),
         "rate": ask_int("Rate (THB/Day): ", 0),
         "status": CAR_ACTIVE,

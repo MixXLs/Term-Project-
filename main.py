@@ -10,12 +10,10 @@ RENT_PATH = "Rentals.dat"
 REPORT_PATH = "report.txt"
 
 # ===== Struct layouts (Little-Endian, fixed-length strings) =====
-# Customer: i id | 15s id_card | 60s name | 12s tel
 CUSTOMER_FMT = "<i15s60s12s"
 CUSTOMER_SIZE = struct.calcsize(CUSTOMER_FMT)
 CUSTOMER_FIELDS = ("customer_id", "id_card", "name", "tel")
 
-# Car: i id | 12s plate | 12s brand | 16s model | i year | i rate | i status | i is_rented
 CAR_FMT = "<i12s12s16siiii"
 CAR_SIZE = struct.calcsize(CAR_FMT)
 CAR_FIELDS = (
@@ -29,7 +27,6 @@ CAR_FIELDS = (
     "is_rented",
 )
 
-# Rental: i rental_id | i car_id | i customer_id | I start_ymd | I end_ymd | i total_days | i status | f total_amount
 RENT_FMT = "<iiiIIiif"
 RENT_SIZE = struct.calcsize(RENT_FMT)
 RENT_FIELDS = (
@@ -67,7 +64,6 @@ def ensure_files():
 
 
 def fit_bytes(s: str, n: int) -> bytes:
-    """UTF-8 encode then hard-trim/pad to n bytes (ป้องกันตัดกลางตัวอักษรหลายไบต์)."""
     b = s.encode("utf-8", errors="ignore")
     if len(b) <= n:
         return b.ljust(n, b" ")
@@ -117,7 +113,7 @@ def ask_ymd(prompt: str) -> int:
         raw = input(prompt + " (YYYY-MM-DD): ").strip()
         try:
             y, m, d = map(int, raw.split("-"))
-            date(y, m, d)  # validate
+            date(y, m, d)
             return y * 10000 + m * 100 + d
         except Exception:
             print("  ! รูปแบบวันที่ไม่ถูกต้อง")
@@ -201,11 +197,8 @@ def print_table(headers: list[str], rows: list[list[str]]):
     for r in rows:
         for i, c in enumerate(r):
             widths[i] = max(widths[i], len(str(c)))
-
-    # เส้นคั่นให้ยาวเท่าข้อความหัวตารางจริง
     sep_len = sum(widths) + 3 * (len(widths) - 1)
     line = "-" * sep_len
-
     print(" | ".join(h.ljust(widths[i]) for i, h in enumerate(headers)))
     print(line)
     for r in rows:
@@ -255,9 +248,9 @@ def add_rental():
     cars = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
     customers = read_all(CUST_PATH, CUSTOMER_FMT, CUSTOMER_FIELDS, CUSTOMER_SIZE)
     rents = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
-
-    car_idx = index_by_key(cars, "car_id")
-    cust_idx = index_by_key(customers, "customer_id")
+    car_idx, cust_idx = index_by_key(cars, "car_id"), index_by_key(
+        customers, "customer_id"
+    )
     rent_ids = set(r["rental_id"] for r in rents)
 
     rid = ask_int("Rental ID: ", 1)
@@ -276,24 +269,22 @@ def add_rental():
         print("  ! รถไม่อยู่สถานะ Active")
         return
 
-    start = ask_ymd("Start date")
-    end = ask_ymd("End date")
+    start, end = ask_ymd("Start date"), ask_ymd("End date")
     sd, ed = ymd(start), ymd(end)
     if ed < sd:
         print("  ! end < start")
         return
 
-    # คำนวณจำนวนวันและราคารวม
     days = (ed - sd).days + 1
     rate = car_idx[car_id][1]["rate"]
     total = float(days * rate)
 
-    # ป้องกันช่วงเช่าทับซ้อน (เฉพาะรายการที่ไม่ถูกลบ)
+    # overlap check (non-deleted)
     existing = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
     for r in existing:
         if r["car_id"] != car_id or r["status"] == RENT_DELETED:
             continue
-        if r["start_ymd"] <= end and r["end_ymd"] >= start:  # overlap
+        if r["start_ymd"] <= end and r["end_ymd"] >= start:
             print("  ! ช่วงเช่าทับกับรายการเดิม (car_id เดียวกัน)")
             return
 
@@ -309,11 +300,10 @@ def add_rental():
     }
     append_record(RENT_PATH, RENT_FMT, pack_rent(d))
 
-    # ตั้งสถานะรถว่า 'กำลังถูกเช่า'
+    # mark car as rented
     i_car, car_row = car_idx[car_id]
     car_row["is_rented"] = 1
     write_record_by_index(CAR_PATH, CAR_FMT, pack_car(car_row), CAR_SIZE, i_car)
-
     print(f"  ✓ บันทึกเช่าแล้ว (Amount {total:.2f})")
 
 
@@ -329,9 +319,8 @@ def update_entity(entity: str):
             print("  ! ไม่พบ")
             return
         i, cur = idx[k]
-        name = input(f"Name [{cur['name']}]: ").strip() or cur["name"]
-        tel = input(f"Tel  [{cur['tel']}]: ").strip() or cur["tel"]
-        cur["name"], cur["tel"] = name, tel
+        cur["name"] = input(f"Name [{cur['name']}]: ").strip() or cur["name"]
+        cur["tel"] = input(f"Tel  [{cur['tel']}]: ").strip() or cur["tel"]
         write_record_by_index(
             CUST_PATH, CUSTOMER_FMT, pack_customer(cur), CUSTOMER_SIZE, i
         )
@@ -387,23 +376,18 @@ def update_entity(entity: str):
         if e_in:
             y, m, d = map(int, e_in.split("-"))
             cur["end_ymd"] = y * 10000 + m * 100 + d
-
         sd, ed = ymd(cur["start_ymd"]), ymd(cur["end_ymd"])
         if ed < sd:
             print("  ! end < start")
             return
         cur["total_days"] = (ed - sd).days + 1
-
         cars = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
         car_idx = index_by_key(cars, "car_id")
         rate = car_idx.get(cur["car_id"], (None, {"rate": 0}))[1]["rate"]
         cur["total_amount"] = float(cur["total_days"] * rate)
-
-        # เขียนกลับ rental
         write_record_by_index(RENT_PATH, RENT_FMT, pack_rent(cur), RENT_SIZE, i)
         print("  ✓ อัปเดตแล้ว")
 
-        # อัปเดต is_rented ของรถให้สอดคล้องกับสถานะ rental
         if cur["car_id"] in car_idx:
             i_car, car_row = car_idx[cur["car_id"]]
             car_row["is_rented"] = 1 if cur["status"] == RENT_OPEN else 0
@@ -411,7 +395,6 @@ def update_entity(entity: str):
 
 
 def delete_entity(entity: str):
-    # Referential integrity: ถ้ามี rentals ห้ามลบจริง customer/car
     if entity in ("customer", "car"):
         rents = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
         key = "customer_id" if entity == "customer" else "car_id"
@@ -421,14 +404,12 @@ def delete_entity(entity: str):
         )
         if any(r[key] == target_id and r["status"] != RENT_DELETED for r in rents):
             print("  ! ยังมีรายการเชื่อมโยงอยู่ (ห้ามลบ) -> จะตั้งสถานะ Inactive")
-        # set Inactive
         if entity == "customer":
             rows = read_all(CUST_PATH, CUSTOMER_FMT, CUSTOMER_FIELDS, CUSTOMER_SIZE)
             idx = index_by_key(rows, "customer_id")
             if target_id not in idx:
                 print("  ! ไม่พบ")
                 return
-            # ไม่มีฟิลด์ status สำหรับลูกค้า จึงไม่ลบจริง (ข้าม)
             print("  ✓ ทำเครื่องหมายแล้ว (ลูกค้าไม่มี status; ข้ามการลบ)")
         else:
             rows = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
@@ -440,7 +421,7 @@ def delete_entity(entity: str):
             cur["status"] = CAR_INACTIVE
             write_record_by_index(CAR_PATH, CAR_FMT, pack_car(cur), CAR_SIZE, i)
             print("  ✓ ตั้งรถเป็น Inactive แล้ว")
-    else:  # rental
+    else:
         rows = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
         idx = index_by_key(rows, "rental_id")
         if not rows:
@@ -458,16 +439,18 @@ def delete_entity(entity: str):
 
 # ===== View =====
 def view_menu():
-    print(dedent("""\
+    print(
+        dedent(
+            """\
       ---- View Submenu ----
       1) View one
       2) View all
-      3) Filter
-      4) Summary stats
+      3) Summary stats
       0) Back
-    """))
-    return ask_int("Choose: ", 0, 4)
-
+    """
+        )
+    )
+    return ask_int("Choose: ", 0, 3)
 
 
 def view_one():
@@ -497,7 +480,6 @@ def view_one():
         print(row)
 
 
-
 def view_all():
     ent = entity_select()
     if ent == 1:
@@ -509,7 +491,12 @@ def view_all():
         headers = ["ID", "Plate", "Brand", "Model", "Year", "Rate", "Status", "Rented"]
         data = [
             [
-                r["car_id"], r["plate"], r["brand"], r["model"], r["year"], r["rate"],
+                r["car_id"],
+                r["plate"],
+                r["brand"],
+                r["model"],
+                r["year"],
+                r["rate"],
                 car_status_label(r["status"]),
                 "Yes" if r["is_rented"] else "No",
             ]
@@ -520,9 +507,13 @@ def view_all():
         headers = ["RID", "Car", "Cust", "Start", "End", "Days", "Status", "Amount"]
         data = [
             [
-                r["rental_id"], r["car_id"], r["customer_id"],
-                ymd(r["start_ymd"]), ymd(r["end_ymd"]),
-                r["total_days"], rent_status_label(r["status"]),
+                r["rental_id"],
+                r["car_id"],
+                r["customer_id"],
+                ymd(r["start_ymd"]),
+                ymd(r["end_ymd"]),
+                r["total_days"],
+                rent_status_label(r["status"]),
                 f"{r['total_amount']:,.2f}",
             ]
             for r in rows
@@ -530,71 +521,15 @@ def view_all():
     print_table(headers, data)
 
 
-
-def view_filtered():
-    print(
-        dedent(
-            """Filter Rentals:
-      1) Open       2) Closed          3) Deleted
-      4) By Car     5) By Customer
-      6) By Brand   7) By Date Range
-    """
-        )
-    )
-    choice = ask_int("เลือก: ", 1, 7)
-    rows = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
-
-    if choice == 1:
-        rows = [r for r in rows if r["status"] == RENT_OPEN]
-    elif choice == 2:
-        rows = [r for r in rows if r["status"] == RENT_CLOSED]
-    elif choice == 3:
-        rows = [r for r in rows if r["status"] == RENT_DELETED]
-    elif choice == 4:
-        cid = ask_int("Car ID: ", 1)
-        rows = [r for r in rows if r["car_id"] == cid]
-    elif choice == 5:
-        uid = ask_int("Customer ID: ", 1)
-        rows = [r for r in rows if r["customer_id"] == uid]
-    elif choice == 6:
-        brand = input("Brand: ").strip()
-        cars = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
-        car_ids = {c["car_id"] for c in cars if c["brand"].lower() == brand.lower()}
-        rows = [r for r in rows if r["car_id"] in car_ids]
-    else:
-        s = ask_ymd("Start date")
-        e = ask_ymd("End   date")
-        # overlap criterion: startA <= endB and endA >= startB
-        rows = [r for r in rows if (r["start_ymd"] <= e and r["end_ymd"] >= s)]
-
-    headers = ["RID", "Car", "Cust", "Start", "End", "Days", "Status", "Amount"]
-    data = [
-        [
-            r["rental_id"],
-            r["car_id"],
-            r["customer_id"],
-            ymd(r["start_ymd"]),
-            ymd(r["end_ymd"]),
-            r["total_days"],
-            rent_status_label(r["status"]),
-            f"{r['total_amount']:,.2f}",
-        ]
-        for r in rows
-    ]
-    print_table(headers, data)
-
-
 def view_stats():
     cars = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
     rents = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
     custs = read_all(CUST_PATH, CUSTOMER_FMT, CUSTOMER_FIELDS, CUSTOMER_SIZE)
-
     car_active = sum(1 for c in cars if c["status"] == CAR_ACTIVE)
     car_inact = sum(1 for c in cars if c["status"] == CAR_INACTIVE)
     rent_open = sum(1 for r in rents if r["status"] == RENT_OPEN)
     rent_close = sum(1 for r in rents if r["status"] == RENT_CLOSED)
     rent_del = sum(1 for r in rents if r["status"] == RENT_DELETED)
-
     print("\n--- Summary Stats ---")
     print(f"Customers : {len(custs)}")
     print(f"Cars      : {len(cars)} (Active {car_active}, Inactive {car_inact})")
@@ -612,7 +547,6 @@ def generate_report():
     cust_by = {c["customer_id"]: c for c in customers}
     car_by = {c["car_id"]: c for c in cars}
 
-    # เอา "Status" ออกจากตาราง
     headers = [
         "Rental_ID",
         "Customer name",
@@ -626,16 +560,14 @@ def generate_report():
         "Rental Day",
         "Total Price",
     ]
-
     table = []
     for r in sorted(rents, key=lambda x: x["rental_id"]):
-        if r["status"] == RENT_DELETED:  # ข้ามรายการลบ
+        if r["status"] == RENT_DELETED:
             continue
         cu = cust_by.get(r["customer_id"], {})
         ca = car_by.get(r["car_id"], {})
         sd, ed = ymd(r["start_ymd"]), ymd(r["end_ymd"])
         date_fmt = "%m/%d/%Y" if sys.platform == "win32" else "%-m/%-d/%Y"
-
         table.append(
             [
                 r["rental_id"],
@@ -652,7 +584,6 @@ def generate_report():
             ]
         )
 
-    # widths
     widths = [len(h) for h in headers]
     for row in table:
         for i, c in enumerate(row):
@@ -661,12 +592,10 @@ def generate_report():
     def fmt_row(cols):
         return " | ".join(str(c).ljust(widths[i]) for i, c in enumerate(cols))
 
-    # สถิติอัตราค่าเช่าสำหรับรถ Active เท่านั้น
     act_rates = [c["rate"] for c in cars if c["status"] == CAR_ACTIVE]
     minr = min(act_rates) if act_rates else 0
     maxr = max(act_rates) if act_rates else 0
     avgr = int(sum(act_rates) / len(act_rates)) if act_rates else 0
-
     brand_cnt = Counter(c["brand"] for c in cars)
 
     buf = io.StringIO()
@@ -684,7 +613,6 @@ def generate_report():
     else:
         buf.write("(no rentals)\n")
 
-    # Summary ด้านล่าง (ยังมีนับสถานะได้ตามเดิม)
     rent_open = sum(1 for x in rents if x["status"] == RENT_OPEN)
     rent_close = sum(1 for x in rents if x["status"] == RENT_CLOSED)
     rent_del = sum(1 for x in rents if x["status"] == RENT_DELETED)
@@ -697,12 +625,10 @@ def generate_report():
     buf.write(
         f"Rentals   : {len(rents)} (Open {rent_open}, Closed {rent_close}, Deleted {rent_del})\n\n"
     )
-
     buf.write("Rate Statistics (Active cars only)\n")
     buf.write(
         f"- Min Rate : {minr:,}\n- Max Rate : {maxr:,}\n- Avg Rate : {avgr:,}\n\n"
     )
-
     buf.write("Cars by Brand\n")
     for b, n in sorted(brand_cnt.items()):
         buf.write(f"- {b} : {n}\n")
@@ -730,21 +656,24 @@ def main_menu():
 
 
 def entity_select() -> int:
-    print(dedent("""\
+    print(
+        dedent(
+            """\
     ---- Select Entity ----
     1) Customer
     2) Car
     3) Rental
-    """))
+    """
+        )
+    )
     return ask_int("Choose: ", 1, 3)
-
 
 
 def main():
     ensure_files()
     while True:
         main_menu()
-        choice = ask_int("Choose: ", 0, 5)   # เดิม: "เลือก: "
+        choice = ask_int("Choose: ", 0, 5)
         if choice == 0:
             try:
                 generate_report()
@@ -769,13 +698,10 @@ def main():
                     view_one()
                 elif sub == 2:
                     view_all()
-                elif sub == 3:
-                    view_filtered()
                 else:
                     view_stats()
         else:
             generate_report()
-
 
 
 if __name__ == "__main__":

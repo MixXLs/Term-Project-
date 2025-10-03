@@ -1,4 +1,4 @@
-import os, struct, sys, io
+import struct, os, sys, io
 from datetime import datetime, date
 from textwrap import dedent
 from collections import Counter
@@ -312,43 +312,42 @@ def update_entity(entity: str):
         rows = read_all(CUST_PATH, CUSTOMER_FMT, CUSTOMER_FIELDS, CUSTOMER_SIZE)
         idx = index_by_key(rows, "customer_id")
         if not rows:
-            print("  (ว่าง)")
-            return
+            print("  (ว่าง)"); return
         k = ask_int("Customer ID ที่จะแก้: ", 1)
         if k not in idx:
-            print("  ! ไม่พบ")
-            return
+            print("  ! ไม่พบ"); return
         i, cur = idx[k]
         cur["name"] = input(f"Name [{cur['name']}]: ").strip() or cur["name"]
-        cur["tel"] = input(f"Tel  [{cur['tel']}]: ").strip() or cur["tel"]
-        write_record_by_index(
-            CUST_PATH, CUSTOMER_FMT, pack_customer(cur), CUSTOMER_SIZE, i
-        )
+        cur["tel"]  = input(f"Tel  [{cur['tel']}]: ").strip() or cur["tel"]
+        write_record_by_index(CUST_PATH, CUSTOMER_FMT, pack_customer(cur), CUSTOMER_SIZE, i)
         print("  ✓ อัปเดตแล้ว")
 
     elif entity == "car":
         rows = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
         idx = index_by_key(rows, "car_id")
         if not rows:
-            print("  (ว่าง)")
-            return
+            print("  (ว่าง)"); return
         k = ask_int("Car ID ที่จะแก้: ", 1)
         if k not in idx:
-            print("  ! ไม่พบ")
-            return
+            print("  ! ไม่พบ"); return
         i, cur = idx[k]
+
+        # 👉 เพิ่มการแก้ไขป้ายทะเบียน (plate)
+        plate = input(f"Plate [{cur['plate']}]: ").strip() or cur["plate"]
+
         brand = input(f"Brand [{cur['brand']}]: ").strip() or cur["brand"]
         model = input(f"Model [{cur['model']}]: ").strip() or cur["model"]
-        year = input(f"Year  [{cur['year']}]: ").strip()
-        rate = input(f"Rate  [{cur['rate']}]: ").strip()
-        status = input(f"Status(1=Active,0=Inactive) [{cur['status']}]: ").strip()
-        if year:
-            cur["year"] = int(year)
-        if rate:
-            cur["rate"] = int(rate)
-        if status != "":
-            cur["status"] = int(status)
+        year  = input(f"Year  [{cur['year']}]: ").strip()
+        rate  = input(f"Rate  [{cur['rate']}]: ").strip()
+        status= input(f"Status(1=Active,0=Inactive) [{cur['status']}]: ").strip()
+
+        if year:    cur["year"]   = int(year)
+        if rate:    cur["rate"]   = int(rate)
+        if status != "": cur["status"] = int(status)
+
+        cur["plate"] = plate             # <- บันทึกค่า plate ที่แก้
         cur["brand"], cur["model"] = brand, model
+
         write_record_by_index(CAR_PATH, CAR_FMT, pack_car(cur), CAR_SIZE, i)
         print("  ✓ อัปเดตแล้ว")
 
@@ -356,30 +355,22 @@ def update_entity(entity: str):
         rows = read_all(RENT_PATH, RENT_FMT, RENT_FIELDS, RENT_SIZE)
         idx = index_by_key(rows, "rental_id")
         if not rows:
-            print("  (ว่าง)")
-            return
+            print("  (ว่าง)"); return
         k = ask_int("Rental ID ที่จะแก้: ", 1)
         if k not in idx:
-            print("  ! ไม่พบ")
-            return
+            print("  ! ไม่พบ"); return
         i, cur = idx[k]
-        status = input(
-            f"Status(1=Open,0=Closed,-1=Deleted) [{cur['status']}]: "
-        ).strip()
-        if status != "":
-            cur["status"] = int(status)
+        status = input(f"Status(1=Open,0=Closed,-1=Deleted) [{cur['status']}]: ").strip()
+        if status!="": cur["status"] = int(status)
         s_in = input(f"Start [{ymd(cur['start_ymd'])} YYYY-MM-DD or blank]: ").strip()
         e_in = input(f"End   [{ymd(cur['end_ymd'])} YYYY-MM-DD or blank]: ").strip()
         if s_in:
-            y, m, d = map(int, s_in.split("-"))
-            cur["start_ymd"] = y * 10000 + m * 100 + d
+            y,m,d = map(int, s_in.split("-")); cur["start_ymd"] = y*10000+m*100+d
         if e_in:
-            y, m, d = map(int, e_in.split("-"))
-            cur["end_ymd"] = y * 10000 + m * 100 + d
+            y,m,d = map(int, e_in.split("-")); cur["end_ymd"] = y*10000+m*100+d
         sd, ed = ymd(cur["start_ymd"]), ymd(cur["end_ymd"])
         if ed < sd:
-            print("  ! end < start")
-            return
+            print("  ! end < start"); return
         cur["total_days"] = (ed - sd).days + 1
         cars = read_all(CAR_PATH, CAR_FMT, CAR_FIELDS, CAR_SIZE)
         car_idx = index_by_key(cars, "car_id")

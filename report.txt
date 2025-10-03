@@ -1,29 +1,30 @@
 Car Rent System - Summary Report
-Generated At: 2025-10-02 15:28:48
+Generated At: 2025-10-03 10:02:49
 App Version: 1.0
 Endianness: Little-Endian
 Encoding: UTF-8 (fixed-length)
 
 Rental_ID | Customer name | Tel.       | License_plate | Brand  | Model | Rate  | Date Rent  | Return date | Rental Day | Total Price
 -------------------------------------------------------------------------------------------------------------------------------------
-3001      | Alice         | 0987315278 | ขค 5679       | Toyota | Vios  | 1,100 | 10/01/2025 | 10/10/2025  | 10         | 11,000.00  
+3001      | Tom           | 0987315278 | ขค 5679       | Toyota | Vios  | 1,100 | 10/01/2025 | 10/10/2025  | 10         | 11,000.00  
 3002      | Mix           | 0942847589 | กข 9999       | Honda  | Civic | 1,500 | 09/28/2025 | 10/02/2025  | 5          | 7,500.00   
-3003      | Auu           | 0831285679 | กง 2134       | Nissan | Amela | 1,300 | 10/02/2025 | 10/05/2025  | 4          | 5,200.00   
-3004      | Tea           | 0963278917 | บก 1234       | Mazda  | 3     | 1,100 | 10/02/2025 | 10/06/2025  | 5          | 5,500.00   
+3003      | Auu           | 0831285679 | กง 1234       | Nissan | Amela | 1,300 | 10/02/2025 | 10/05/2025  | 4          | 5,200.00   
+3004      | Tea           | 0963278917 | บก 5678       | Mazda  | 3     | 1,100 | 10/02/2025 | 10/04/2025  | 3          | 3,300.00   
+3005      | Tom           | 0987315278 | กด 5978       | Honda  | Civic | 1,200 | 09/29/2025 | 10/10/2025  | 12         | 14,400.00  
 
 --- Summary ---
 
 Customers : 4
-Cars      : 4 (Active 4, Inactive 0)
-Rentals   : 4 (Open 4, Closed 0, Deleted 0)
+Cars      : 6 (Active 6, Inactive 0)
+Rentals   : 5 (Open 5, Closed 0, Deleted 0)
 
 Rate Statistics (Active cars only)
-- Min Rate : 1,100
+- Min Rate : 900
 - Max Rate : 1,500
-- Avg Rate : 1,250
+- Avg Rate : 1,183
 
 Cars by Brand
-- Honda : 1
+- Honda : 2
 - Mazda : 1
 - Nissan : 1
-- Toyota : 1
+- Toyota : 2
